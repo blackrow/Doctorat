@@ -1,0 +1,827 @@
+---
+title: "Geostatistics"
+author: "AyouB"
+date: "04/05/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Geostatistical part
+
+# Loading packages
+
+```{r }
+pacman::p_load(tidyverse,
+               INLA,
+               sp,
+               sf,
+               rgdal,
+               rgeos,
+               tmap,
+               tmaptools,
+               readxl,
+               RColorBrewer,
+               spdep,
+               raster,
+               viridis,
+               patchwork)
+```
+
+## multi thread option 
+
+```{r}
+inla.setOption(num.threads=1)
+```
+
+
+# Help Functions
+
+
+```{r }
+logit <- function(x){log(x/(1-x))}
+expit <- function(x) {exp(x)/(1+exp(x))}
+```
+
+
+
+# Data (same as areal model if already executed)
+
+```{r}
+# Import Data
+data = read_xlsx("data.xlsx", sheet = "Sheet1")
+data$ID <- 1:48
+
+# Getting shapefiles
+dz_mapw <- getData("GADM", country ="DZ", level = "1")
+dz_map <- getData("GADM", country ="DZ", level = "0")
+
+dz2 <- st_as_sf(dz_mapw)
+
+# cleaning wilayas names
+Wilaya <- dz2$NAME_1 %>% 
+                lapply(gsub, pattern="ï", replacement = "i") %>% 
+                unlist()
+dz2$Wilaya <- Wilaya
+
+# Merging data with shapefiles
+full <- dz2 %>% full_join(data, by = "Wilaya")
+full$CIG = full$CIG/1000
+
+# Convert to spatial polygon again !
+full_poly <- as_Spatial(full)
+```
+
+
+
+## Geostatistics
+
+# Creation of centroids
+
+```{r}
+sf_cent <- st_centroid(full)
+sp_cent <- gCentroid(as(full, "Spatial"), byid = TRUE)
+
+sample3 <- as_Spatial(sf_cent) 
+
+ggplot() + 
+  geom_sf(data = full, fill = 'white') +
+  geom_sf(data = sf_cent, color = 'red') 
+
+ggplot() + 
+  geom_sf(data = full, fill = 'white') +
+  geom_sf(data = sample3 %>% st_as_sf, color = 'blue') 
+```
+
+# plot the data 
+
+```{r}
+ggplot() + 
+  geom_sf(data = full, fill = 'white') +
+  geom_sf(data = sf_cent, aes(col= Y2)) +
+  coord_sf() +
+  scale_color_gradient(low = "blue", high = "red") +
+  labs(color ='Mortlaité') +
+  theme_bw()
+
+ggplot() + 
+  geom_sf(data = sf_cent, aes(col= Y2)) +
+  coord_sf() +
+  scale_color_gradient(low = "blue", high = "red") +
+  labs(color ='Mortlaité') +
+  theme_bw() 
+  
+```
+
+## statistics about data 
+
+```{r}
+full_poly@data %>%
+  ggplot(aes(x = Y2)) +
+  geom_histogram(bins = 10, fill = "blue") +
+  geom_vline(xintercept = mean(data$Y), col ="red") +
+  labs(
+       x="Mortalité", y="Fréquence") +
+  theme_bw()
+
+full_poly@data %>%
+  ggplot(aes(y = Y2)) +
+  geom_boxplot(fill = "lightblue") +
+  geom_hline(yintercept = mean(data$Y2), col ="red") +
+  labs(y="Mortalité") + 
+  theme_bw()
+```
+
+
+## km ?
+
+```{r}
+coo <- sample3@coords
+
+km <- SpatialEpi::latlong2grid(coo)
+km2 <- as.matrix(km)
+
+summary(dist(km2))
+```
+
+
+# Mesh Creation 
+
+```{r}
+coo <- sample3@coords
+
+
+mesh3 <- inla.mesh.2d(loc = coo, 
+                      offset = c(5,1),
+                      max.edge = c(1,3), 
+                      cutoff= 0.1)
+plot(mesh3)
+plot(dz_map, add= T, border = "blue")
+points(coo, col = "red")
+
+```
+
+
+# Other mesh specifications (don't execute !!!)
+
+```{r}
+
+# mesh3 <- inla.mesh.2d(loc = coo, 
+#                       max.edge = c(0.1,3), 
+#                       cutoff= 0.1)
+# p1 <- plot(mesh3); plot(dz_map, add= T, border = "blue") ;points(coo, col = "red")
+# 
+# 
+# mesh3 <- inla.mesh.2d(loc = coo, 
+#                       max.edge = c(0.75,3), 
+#                       cutoff= 0.1)
+# p2<- plot(mesh3); plot(dz_map, add= T, border = "blue"); points(coo, col = "red")
+# 
+# 
+# 
+# 
+# mesh3 <- inla.mesh.2d(loc = coo, 
+#                       max.edge = c(1,3), 
+#                       cutoff= 0.1)
+# p3<- plot(mesh3); plot(dz_map, add= T, border = "blue"); points(coo, col = "red")
+# 
+# 
+# 
+# 
+# mesh3 <- inla.mesh.2d(loc = coo, 
+#                       max.edge = c(1.5,3), 
+#                       cutoff= 0.1)
+# p4 <- plot(mesh3); plot(dz_map, add= T, border = "blue"); points(coo, col = "red")
+# 
+# 
+# 
+# mesh3 <- inla.mesh.2d(loc = coo, 
+#                       max.edge = c(2,3), 
+#                       cutoff= 0.1)
+# p5 <- plot(mesh3); plot(dz_map, add= T, border = "blue"); points(coo, col = "red")
+# 
+# 
+# 
+# mesh3 <- inla.mesh.2d(loc = coo, 
+#                       max.edge = c(2.5,3), 
+#                       cutoff= 0.1)
+# p6 <- plot(mesh3); plot(dz_map, add= T, border = "blue"); points(coo, col = "red")
+# 
+# 
+# mesh3 <- inla.mesh.2d(loc = coo, 
+#                       offset = c(3.1),
+#                       max.edge = c(1,3), 
+#                       cutoff= 0.1)
+# p7 <- plot(mesh3); plot(dz_map, add= T, border = "blue"); points(coo, col = "red")
+# 
+# 
+# mesh3 <- inla.mesh.2d(loc = coo, 
+#                       offset = c(4.1),
+#                       max.edge = c(1,3), 
+#                       cutoff= 0.1)
+# p8 <- plot(mesh3); plot(dz_map, add= T, border = "blue"); points(coo, col = "red")
+# 
+# 
+# mesh3 <- inla.mesh.2d(loc = coo, 
+#                       offset = c(5.1),
+#                       max.edge = c(1,3), 
+#                       cutoff= 0.1)
+# p9 <- plot(mesh3); plot(dz_map, add= T, border = "blue"); points(coo, col = "red")
+# 
+# 
+# mesh3 <- inla.mesh.2d(loc =  coo,
+#                       boundary = dz_map,
+#                       offset = c(5,1),
+#                       max.edge = c(1,3),
+#                       cutoff= 0.1)
+# plot(mesh3)
+# plot(dz_map, add= T, border = "blue")
+# points(coo, col = "red")
+# 
+# 
+# mesh3 <- inla.mesh.2d(loc =  coo,
+#                       boundary = dz_map,
+#                       offset = c(5,1),
+#                       max.edge = c(3,3),
+#                       cutoff= 0.1)
+# plot(mesh3)
+# plot(dz_map, add= T, border = "blue")
+# points(coo, col = "red")
+# 
+# 
+# mee <- inla.nonconvex.hull(coo, 0.75, 0.75)
+# mesh3 <- inla.mesh.2d(loc.domain =  coo,
+#                       boundary = mee,
+#                       max.edge = c(3,3),
+#                       cutoff= 0.1)
+# 
+# plot(mesh3)
+# points(coo, col = "red")
+# 
+# 
+# mee <- inla.nonconvex.hull(coo, 0.9, 0.9)
+# mesh3 <- inla.mesh.2d(loc.domain =  coo,
+#                       boundary = mee,
+#                       max.edge = c(3,3),
+#                       cutoff= 0.1)
+# 
+# plot(mesh3)
+# points(coo, col = "red")
+# 
+# mee <- inla.nonconvex.hull(coo, 0.6, 0.6)
+# mesh3 <- inla.mesh.2d(loc.domain =  coo,
+#                       boundary = mee,
+#                       max.edge = c(3,3),
+#                       cutoff= 0.1)
+# 
+# plot(mesh3)
+# points(coo, col = "red")
+```
+
+
+
+
+
+# Model setting and fit
+
+```{r}
+# SPDE definition 
+spde3 <- inla.spde2.matern(mesh = mesh3, alpha = 2, constr = T)
+
+# Index set creation
+index3 <- inla.spde.make.index("s", spde3$n.spde)
+lengths(index3)
+
+# Projection Matrix 
+A3 <- inla.spde.make.A(mesh = mesh3, loc = coo)
+
+# Prediction locations 
+bb <- bbox(dz_map)
+x <- seq(bb[1, "min"] - 1, bb[1, "max"] + 1, length.out = 100)
+y <- seq(bb[2, "min"] - 1, bb[2, "max"] + 1, length.out = 100)
+
+d <- (expand.grid(x,y,KEEP.OUT.ATTRS = F))
+names(d) = c("x","y")
+coordinates(d)=~x+y
+d@proj4string = dz_map@proj4string 
+d2 <- d[dz_map,]
+plot(d2, asp = 1, type = "o")
+
+d3 <- d2 %>% st_as_sf()
+
+ggplot(d3) +
+  geom_sf(aes(shape = "o")) + 
+  theme_bw() +
+  theme(legend.position = "none") 
+
+coop <- as.matrix(data.frame(x = d2$x, y= d2$y))
+
+# Projection Matrix for the prediction 
+Ap3 <- inla.spde.make.A(mesh = mesh3, loc = coop)
+
+# INLA Stack 
+stk.e3 <- inla.stack(
+  tag = "est",
+  data = list(Y = full$Y2),
+  A = list(1, A3),
+  effects = list(data.frame(b0 = rep(1, nrow(coo)), ID = full$ID, CIG =full$CIG)
+                 , s = index3)
+)
+
+stk.p3 <- inla.stack(
+  tag = "pred",
+  data = list(Y = NA),
+  A = list(1, Ap3),
+  effects = list(data.frame(b0 = rep(1, nrow(coop))), s = index3)
+)
+
+stk.full3 <- inla.stack(stk.e3, stk.p3)
+
+# Formulas 
+formula3 <- Y ~ 0 + b0 + f(s, model = spde3) 
+
+# Model Estimation
+res3 <- inla(formula3, family ="Poisson",
+            data = inla.stack.data(stk.full3),
+            control.predictor = list(
+              compute = TRUE,
+              A = inla.stack.A(stk.full3)
+            ), verbose = F,
+            control.compute = list(cpo = TRUE, dic = TRUE, graph = TRUE, waic =TRUE)
+)
+```
+
+
+
+# Model Summary
+
+```{r}
+res3$summary.fitted.values
+
+res3$summary.fixed
+
+res3$summary.hyperpar
+```
+
+# Model Evaluation 
+
+```{r}
+paste("DIC")
+res3$dic$dic
+paste("Effective number of paramètres")
+res3$dic$p.eff
+paste("WAIC")
+res3$waic$waic
+res3$waic$p.eff
+paste("Marginal likelihood")
+res3$mlik
+paste("log CPO")
+-sum(log(res3$cpo$cpo), na.rm = TRUE)
+```
+
+# failure CPO probabilities
+
+```{r}
+fp <- res3$cpo$failure[1:48]
+fp
+
+table(fp == 0)
+```
+
+
+# Modified Model 
+
+```{r}
+# this procedure take a lot of time
+res4 <- res3
+res3 <- inla.cpo(res3)
+```
+
+# CPO plot 
+
+```{r}
+n = length(full$Y)
+plot(1:n, res3$cpo$cpo[1:48], ylab="CPO",xlab = "wilayas")
+abline(h = 0.01, col ="red")
+```
+
+# PIT plot
+
+```{r}
+pit <- res3$cpo$pit[1:48]
+uniquant <- (1:48)/(48+1)
+plot(uniquant, sort(pit), xlab="quantiles uniformes",
+     ylab="valeurs PIT ordonnées")
+abline(0,1)
+
+data.frame(pit = sort(pit), uni = uniquant) %>%
+  ggplot(aes(x= uni, y = pit)) + 
+  geom_point()+
+  geom_abline(intercept = 0, slope = 1, col = "red") + 
+  labs(x= "quantiles uniformes", y = "valeurs PIT ordonnées") +
+  theme_bw()
+
+data.frame(pit = logit(sort(pit)), uni = logit(uniquant)) %>%
+  ggplot(aes(x= uni, y = pit)) + 
+  geom_point()+
+  geom_abline(intercept = 0, slope = 1, col = "red") +
+  labs(x= "quantiles uniformes", y = "valeurs PIT ordonnées") +
+  ggtitle("échelle logarithmique")+
+  theme_bw()
+```
+
+# Model parameters 
+
+```{r}
+spde.est3 <- inla.spde2.result(inla = res3, name = "s",
+                              spde = spde3, do.transf = TRUE)
+
+
+paste("minimal variance")
+inla.zmarginal(spde.est3$marginals.variance.nominal[[1]])
+paste("nominal range")
+inla.zmarginal(spde.est3$marginals.range.nominal[[1]])
+
+plot(spde.est3[["marginals.range.nominal"]][[1]], type = "l")
+plot(spde.est3[["marginals.variance.nominal"]][[1]], type = "l")
+plot(spde.est3[["marginals.log.kappa"]][[1]], type = "l")
+plot(spde.est3[["marginals.log.tau"]][[1]], type = "l")
+```
+
+
+## plot model (change the true value to get different plots)
+
+```{r}
+plot(res3,
+     plot.fixed.effects = FALSE,
+     plot.lincomb = FALSE,
+     plot.random.effects = FALSE,
+     plot.hyperparameters = FALSE,
+     plot.predictor = FALSE,
+     plot.q = FALSE,
+     plot.cpo = TRUE
+)
+```
+
+
+## RMSE on train data
+
+```{r}
+index.est = inla.stack.index(stk.full3,"est")$data
+lp.mean.val = res3$summary.linear.predictor[index.est,"mean"]
+e <- exp(lp.mean.val)
+
+paste("corrélation")
+cor(e, full_poly@data$Y2)
+
+rest = full_poly@data$Y2 - e
+
+paste0("RMSE")
+sqrt(mean(rest^2))
+
+data.frame(Y = full_poly@data$Y2, e = e) %>%
+  ggplot(aes(x = Y, y = e)) + 
+  geom_point() +
+  labs(x = "Observation", y = "Estimation") +
+  geom_abline(slope = 1, intercept = 0, col = "red") +
+  theme_bw()
+  
+
+plot(full_poly@data$Y, e, xlab="Observation", ylab="prédiction")
+```
+
+
+
+# Plot predictions
+
+```{r}
+index_3 <- inla.stack.index(stk.full3, tag = "pred")$data
+
+pred_mean3 <- exp(res3$summary.linear.predictor[index_3, "mean"])
+pred_ll3 <- exp(res3$summary.linear.predictor[index_3, "0.025quant"])
+pred_ul3 <- exp(res3$summary.linear.predictor[index_3, "0.975quant"])
+
+dpm3 <- rbind(
+
+  data.frame(
+    east = coop[, 1], north = coop[, 2],
+    value = pred_ll3, variable = "borne inférieure"
+  ),
+  data.frame(
+    east = coop[, 1], north = coop[, 2],
+    value = pred_mean3, variable = "prédiction moyenne"
+  ),
+  data.frame(
+    east = coop[, 1], north = coop[, 2],
+    value = pred_ul3, variable = "borne supérieure"
+  )
+)
+dpm3$variable <- as.factor(dpm3$variable)
+
+dpm3 %>%
+  filter(variable == "prédiction moyenne") %>%
+  ggplot() + geom_tile(aes(east, north, fill = value)) +
+  #facet_wrap(~variable, nrow = 3) +
+  coord_fixed(ratio = 1) +
+  scale_fill_gradient(
+    name = "Mortalité",
+    low = "blue", high = "red"
+  ) +
+  theme_bw()
+
+dpm3 %>%
+  #filter(variable != "prédiction moyenne") %>%
+  ggplot() + geom_tile(aes(east, north, fill = value)) +
+  facet_wrap(~variable, nrow = 1) +
+  coord_fixed(ratio = 1) +
+  scale_fill_gradient(
+    name = "Mortalité",
+    low = "blue", high = "orange"
+  ) +
+  theme_bw()
+
+dpm3 %>%
+  group_by(variable) %>%
+  summarize(v = min(value))
+```
+
+# Spatial Field projection
+
+```{r}
+rang3 <- apply(mesh3$loc[, c(1, 2)], 2, range)
+proj3 <- inla.mesh.projector(mesh3,
+                             xlim = rang3[, 1], ylim = rang3[, 2],
+                             dims = c(1000, 1000))
+
+mean_s3 <- inla.mesh.project(proj3, res3$summary.random$s$mean)
+sd_s3 <- inla.mesh.project(proj3, res3$summary.random$s$sd)
+
+df3 <- expand.grid(x = proj3$x, y = proj3$y)
+df3$mean <- as.vector(mean_s3)
+df3$sd <- as.vector(sd_s3)
+
+
+
+gmean3 <- ggplot(df3, aes(x = x, y = y, fill = mean)) +
+  geom_raster() + 
+  scale_fill_viridis(na.value = "transparent") +
+  labs(x = "east", y = "north" , fill = "moyenne") +
+  coord_fixed(ratio = 1) + theme_bw()
+
+gsd3 <- ggplot(df3, aes(x = x, y = y, fill = sd)) +
+  geom_raster() +
+  scale_fill_viridis(na.value = "transparent") +
+  labs(x = "east", y = "north" , fill = "écart-type") +
+  coord_fixed(ratio = 1) + theme_bw()
+
+gmean3 + gsd3
+```
+
+# same plots but with the study region (takes time)
+
+```{r}
+coordinates(df3) =~x+y
+df3@proj4string = dz_map@proj4string
+df3 <- as.data.frame(df3[dz_map,])
+
+
+
+gmean3 <- ggplot(df3, aes(x = x, y = y, fill = mean)) +
+  geom_raster() +
+  scale_fill_viridis(na.value = "transparent") +
+  labs(x = "east", y = "north" , fill = "moyenne") +
+  coord_sf() + theme_bw()
+
+gsd3 <- ggplot(df3, aes(x = x, y = y, fill = sd)) +
+  geom_raster() +
+  scale_fill_viridis(na.value = "transparent",begin = 0.17, end =0.8) +
+  labs(x = "east", y = "north" , fill = "écart-type") +
+  coord_sf() + theme_bw()
+
+
+gmean3 + gsd3
+gsd3
+gmean3
+```
+
+
+## PC prior model (another model specification)
+
+
+```{r}
+coo <- sample3@coords
+## summary(dist(coo))
+
+
+mesh3 <- inla.mesh.2d(loc = coo, 
+                      offset = c(5,1),
+                      max.edge = c(1,3), 
+                      cutoff= 0.1)
+plot(mesh3)
+plot(dz_map, add= T, border = "blue")
+points(coo, col = "red")
+
+
+spde3 = inla.spde2.pcmatern(mesh3,
+                                   prior.range = c(5, 0.5),
+                                   prior.sigma = c(10, 0.05))
+
+index3 <- inla.spde.make.index("s", spde3$n.spde)
+lengths(index3)
+
+A3 <- inla.spde.make.A(mesh = mesh3, loc = coo)
+
+bb <- bbox(dz_map)
+x <- seq(bb[1, "min"] - 1, bb[1, "max"] + 1, length.out = 100)
+y <- seq(bb[2, "min"] - 1, bb[2, "max"] + 1, length.out = 100)
+
+d <- (expand.grid(x,y,KEEP.OUT.ATTRS = F))
+names(d) = c("x","y")
+coordinates(d)=~x+y
+d@proj4string = dz_map@proj4string 
+d2 <- d[dz_map,]
+plot(d2, asp = 1, type = "o")
+
+d3 <- d2 %>% st_as_sf()
+
+ggplot(d3) +
+  geom_sf(aes(shape = "o")) + 
+  theme_bw() +
+  theme(legend.position = "none") 
+
+coop <- as.matrix(data.frame(x = d2$x, y= d2$y))
+
+Ap3 <- inla.spde.make.A(mesh = mesh3, loc = coop)
+
+stk.e3 <- inla.stack(
+  tag = "est",
+  data = list(Y = full$Y2),
+  A = list(1, A3),
+  effects = list(data.frame(b0 = rep(1, nrow(coo)), ID = full$ID, CIG =full$CIG)
+                 , s = index3)
+)
+
+stk.p3 <- inla.stack(
+  tag = "pred",
+  data = list(Y = NA),
+  A = list(1, Ap3),
+  effects = list(data.frame(b0 = rep(1, nrow(coop))), s = index3)
+)
+
+stk.full3 <- inla.stack(stk.e3, stk.p3)
+
+formula3 <- Y ~ 0 + b0  + f(s, model = spde3)
+
+pc3 <- inla(formula3, family ="Poisson",
+            data = inla.stack.data(stk.full3),
+            control.predictor = list(
+              compute = TRUE,
+              A = inla.stack.A(stk.full3)
+            ), verbose = T,
+            control.compute = list(cpo = TRUE, dic = TRUE, graph = TRUE, waic =TRUE)
+)
+```
+
+## Model with PC evaluation 
+
+```{r}
+pc3$summary.fitted.values
+
+pc3$summary.fixed
+
+pc3$summary.hyperpar
+
+
+paste("DIC")
+pc3$dic$dic
+paste("Effective number of paramètres")
+pc3$dic$p.eff
+paste("WAIC")
+pc3$waic$waic
+pc3$waic$p.eff
+paste("Marginal likelihood")
+pc3$mlik
+paste("log CPO")
+-sum(log(pc3$cpo$cpo), na.rm = TRUE)
+
+
+
+```
+
+## CPO correction 
+
+```{r}
+pc4 <- pc3
+pc3 <- inla.cpo(pc3)
+```
+
+
+# Plot predictions
+
+```{r}
+index_3 <- inla.stack.index(stk.full3, tag = "pred")$data
+
+pred_mean3 <- exp(pc3$summary.linear.predictor[index_3, "mean"])
+pred_ll3 <- exp(pc3$summary.linear.predictor[index_3, "0.025quant"])
+pred_ul3 <- exp(pc3$summary.linear.predictor[index_3, "0.975quant"])
+
+dpm3 <- rbind(
+
+  data.frame(
+    east = coop[, 1], north = coop[, 2],
+    value = pred_ll3, variable = "borne inférieure"
+  ),
+  data.frame(
+    east = coop[, 1], north = coop[, 2],
+    value = pred_mean3, variable = "prédiction moyenne"
+  ),
+  data.frame(
+    east = coop[, 1], north = coop[, 2],
+    value = pred_ul3, variable = "borne supérieure"
+  )
+)
+dpm3$variable <- as.factor(dpm3$variable)
+
+dpm3 %>%
+  filter(variable == "prédiction moyenne") %>%
+  ggplot() + geom_tile(aes(east, north, fill = value)) +
+  #facet_wrap(~variable, nrow = 3) +
+  coord_fixed(ratio = 1) +
+  scale_fill_gradient(
+    name = "Mortalité",
+    low = "blue", high = "red"
+  ) +
+  theme_bw()
+
+dpm3 %>%
+  filter(variable != "prédiction moyenne") %>%
+  ggplot() + geom_tile(aes(east, north, fill = value)) +
+  facet_wrap(~variable, nrow = 1) +
+  coord_fixed(ratio = 1) +
+  scale_fill_gradient(
+    name = "Mortalité",
+    low = "blue", high = "orange"
+  ) +
+  theme_bw()
+
+dpm3 %>%
+  group_by(variable) %>%
+  summarize(v = min(value))
+
+
+
+
+rang3 <- apply(mesh3$loc[, c(1, 2)], 2, range)
+proj3 <- inla.mesh.projector(mesh3,
+                             xlim = rang3[, 1], ylim = rang3[, 2],
+                             dims = c(1000, 1000))
+
+mean_s3 <- inla.mesh.project(proj3, pc3$summary.random$s$mean)
+sd_s3 <- inla.mesh.project(proj3, pc3$summary.random$s$sd)
+
+df3 <- expand.grid(x = proj3$x, y = proj3$y)
+df3$mean <- as.vector(mean_s3)
+df3$sd <- as.vector(sd_s3)
+
+
+
+gmean3 <- ggplot(df3, aes(x = x, y = y, fill = mean)) +
+  geom_raster() + 
+  scale_fill_viridis(na.value = "transparent") +
+  labs(x = "east", y = "north" , fill = "moyenne") +
+  coord_fixed(ratio = 1) + theme_bw()
+
+gsd3 <- ggplot(df3, aes(x = x, y = y, fill = sd)) +
+  geom_raster() +
+  scale_fill_viridis(na.value = "transparent") +
+  labs(x = "east", y = "north" , fill = "écart-type") +
+  coord_fixed(ratio = 1) + theme_bw()
+
+gmean3 + gsd3
+
+
+coordinates(df3) =~x+y
+df3@proj4string = dz_map@proj4string
+df3 <- as.data.frame(df3[dz_map,])
+
+
+gmean3 <- ggplot(df3, aes(x = x, y = y, fill = mean)) +
+  geom_raster() +
+  scale_fill_viridis(na.value = "transparent") +
+  labs(x = "east", y = "north" , fill = "moyenne") +
+  coord_sf() + theme_bw()
+
+gsd3 <- ggplot(df3, aes(x = x, y = y, fill = sd)) +
+  geom_raster() +
+  scale_fill_viridis(na.value = "transparent",begin = 0.17, end =0.8) +
+  labs(x = "east", y = "north" , fill = "écart-type") +
+  coord_sf() + theme_bw()
+
+
+gmean3 + gsd3
+gsd3
+gmean3
+
+```
