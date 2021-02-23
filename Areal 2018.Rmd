@@ -1,0 +1,630 @@
+---
+title: "Areal 2"
+author: "AyouB"
+date: "14/10/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Areal part
+
+# Loading packages
+
+```{r }
+pacman::p_load(tidyverse,
+               INLA,
+               sp,
+               sf,
+               rgdal,
+               rgeos,
+               tmap,
+               tmaptools,
+               readxl,
+               RColorBrewer,
+               spdep,
+               raster,
+               patchwork)
+```
+
+## multi thread option 
+
+```{r}
+inla.setOption(num.threads=1)
+```
+
+
+# Help Functions
+
+
+```{r }
+logit <- function(x){log(x/(1-x))}
+expit <- function(x) {exp(x)/(1+exp(x))}
+```
+
+# Data
+
+```{r}
+# Import Data
+data = read_xlsx("data.xlsx", sheet = "Sheet1")
+data$ID <- 1:48
+
+# Getting shapefiles
+dz_mapw <- getData("GADM", country ="DZ", level = "1")
+dz_map <- getData("GADM", country ="DZ", level = "0")
+
+dz2 <- st_as_sf(dz_mapw)
+
+# cleaning wilayas names
+Wilaya <- dz2$NAME_1 %>% 
+                lapply(gsub, pattern="ï", replacement = "i") %>% 
+                unlist()
+dz2$Wilaya <- Wilaya
+
+# Merging data with shapefiles
+full <- dz2 %>% full_join(data, by = "Wilaya")
+full$CIG = full$CIG/1000
+
+# Convert to spatial polygon again !
+full_poly <- as_Spatial(full)
+```
+
+
+# Some Exploratory data analysis 
+
+```{r}
+full_poly@data %>%
+  ggplot(aes(x = Y)) +
+  geom_histogram(bins = 10, fill = "blue") +
+  geom_vline(xintercept = mean(data$Y), col ="red") +
+  labs(
+       x="Mortalité", y="Fréquence") +
+  theme_bw()
+
+full_poly@data %>%
+  ggplot(aes(y = Y)) +
+  geom_boxplot(fill = "lightblue") +
+  geom_hline(yintercept = mean(data$Y), col ="red") +
+  labs(y="Mortalité") + 
+  theme_bw()
+
+full_poly@data %>%
+  ggplot(aes(x = E)) +
+  geom_histogram(bins = 10, fill = "blue") +
+  geom_vline(xintercept = mean(data$E), col ="red") +
+  labs(
+       x="Mortalité attendue", y="Fréquence") +
+  theme_bw()
+
+full_poly@data %>%
+  ggplot(aes(y = Y)) +
+  geom_boxplot(fill = "lightblue") +
+  geom_hline(yintercept = mean(data$E), col ="red") +
+  labs(y="Mortalité espérée") +
+  theme_bw()
+
+
+full_poly@data %>%
+  ggplot(aes(x = CIG)) +
+  geom_histogram(bins = 10, fill = "blue") +
+  geom_vline(xintercept = mean(data$CIG)/1000, col ="red") +
+  labs(
+    x="Nombre de cigarettes (100 Millions)", y="Fréquence") +
+  theme_bw()
+
+full_poly@data %>%
+  ggplot(aes(y = CIG)) +
+  geom_boxplot(fill = "lightblue") +
+  geom_hline(yintercept = mean(data$CIG)/1000, col ="red") +
+  labs(y="Nombre de cigarettes (100 Millions)") + 
+  theme_bw()
+```
+
+
+## Neighboorhood analysis 
+
+
+# Creation of neighboors
+
+```{r}
+temp <- poly2nb(full_poly)
+nb2INLA("ALG.graph", temp)
+ALG.adj <- paste(getwd(),"/ALG.graph",sep="")
+
+wmat <- nb2listw(temp, style ="C")
+
+plot(dz_mapw, border = "grey60")
+plot(wmat, coordinates(dz_mapw), pch = 19, cex = 0.6, add = TRUE, col ="red")
+```
+
+# Moran Test 
+
+```{r}
+moran.test(full_poly@data$Y, listw = wmat, alternative = "less")
+moran.test(full_poly@data$Y, listw = wmat, alternative = "greater")
+moran.test(full_poly@data$Y, listw = wmat, alternative = "two.sided")
+
+
+
+moran.plot(full_poly@data$Y, listw = wmat, zero.policy=T, pch=16, 
+           col="black",cex=.5, quiet=F,
+           labels=as.character(full_poly@data$Wilaya),
+           xlab="Mortalité par cancer du poumon", 
+           ylab="Mortalité par cancer du poumon (retard spatial)", 
+           main="Nuage de points de Moran")
+```
+
+# Moran Test MC
+
+```{r}
+set.seed(1234)
+mc = moran.mc(full_poly@data$Y, listw = wmat, nsim = 999, alternative = "greater")
+mc
+
+plot(mc, main="", las=1, xlab = "Mortalité")
+
+s1 <- sp.mantel.mc(full_poly@data$Y, listw = wmat, nsim = 999, type ="moran", alternative = "greater")
+s1
+plot(s1)
+```
+
+
+# Geary Test 
+
+```{r}
+set.seed(1234)
+geary.test(full_poly@data$Y, listw = wmat, zero.policy=T, alternative = "greater")
+g.mc <- geary.mc(full_poly@data$Y, listw = wmat, nsim = 999, alternative = "greater")
+g.mc
+plot(g.mc, main="Densité des Permutations", las=1, xlab = "Mortalité", ylab = "Densité")
+
+s2 <- sp.mantel.mc(full_poly@data$Y, listw = wmat, nsim = 999, type ="geary", alternative = "less")
+s2
+plot(s2)
+
+```
+
+
+# Local Spatial Heteroscedastisticity
+
+```{r}
+LOSH(full_poly@data$Y, listw = wmat)
+l<- LOSH.cs(full_poly@data$Y, listw = wmat)
+l
+hist(l[,"Hi"])
+
+lmc<- LOSH.mc(full_poly@data$Y, listw = wmat, 2 ,999)
+plot(l[,"Pr()"], lmc[,"Pr()"])
+```
+
+
+# Local Moran 
+
+```{r}
+loc_moran <- localmoran(full_poly@data$Y, listw = wmat, zero.policy=T)
+loc_moran
+
+hist(loc_moran[,5])
+```
+
+
+# Save Local Moran (if needed)
+
+```{r}
+l <- as.data.frame(as.matrix(loc_moran))
+# xlsx::write.xlsx(l, "local.xlsx")
+```
+
+
+# Plot Local Moran (you need the charge the function from the attached file)
+
+```{r}
+plot.local.moran(full_poly, variable.name = "Y", weights = wmat,sig =0.1,
+                 local.moran = loc_moran, legend.location = "topright")
+```
+
+# Getis-Ord Test 
+
+```{r}
+globalG.test(full_poly@data$Y, listw = wmat, zero.policy=T, alternative = "greater")
+
+getis <- localG(full_poly@data$Y, listw = wmat, zero.policy=T)
+getis
+```
+
+# Some plots 
+
+```{r}
+full_poly@data$loc_moran <- abs(loc_moran[,4])
+full_poly@data$loc_moran2 <- loc_moran[,1]
+full_poly@data$getis <- as.numeric(getis)
+
+
+full$loc_moran <- abs(loc_moran[,4])
+full$loc_moran1 <- loc_moran[,1]
+full$getis <- as.numeric(getis)
+
+ggplot(full) + geom_sf(aes(fill = loc_moran)) +
+  scale_fill_gradient2(midpoint = 1, low = "yellow", mid = "white", 
+                       high = "red", limits = c(0, 2)) +
+  theme_bw()
+
+ggplot(full) + geom_sf(aes(fill = loc_moran1)) +
+  scale_fill_gradient2(midpoint = 0, low = "blue", mid = "white", 
+                       high = "red", limits = c(-0.5, 0.66)) +
+  theme_bw()
+
+ggplot(full) + geom_sf(aes(fill = getis)) +
+  scale_fill_gradient2(midpoint = 1 , low = "green", mid = "white", 
+                       high = "red", limits = c(-1.86, 3.4)) +
+  theme_bw()
+
+tm_shape(full_poly) + 
+  tm_borders(col="black") +
+  tm_fill(col = "loc_moran", title = "I de Moran locale (|z| scores)")
+
+tm_shape(full_poly) + 
+  tm_borders(col="black") +
+  tm_fill(col = "loc_moran2", midpoint = NA, 
+          palette = get_brewer_pal("-RdYlGn", n = 7), 
+          title = "I de Moran locale (Valeurs)")
+
+tm_shape(full_poly) + 
+  tm_borders(col="black") +
+  tm_fill(col = "getis", midpoint = NA, 
+          palette = get_brewer_pal("-RdYlGn", n = 7), 
+          title = "Local Getis-Ord G (Values)")
+```
+
+## Areal Modeling 
+
+# Formulas 
+
+```{r}
+# the formulas changes with the model
+formula.cov <- Y ~ 1+ + CIG + f(ID, model = "bym", graph = ALG.adj, 
+                              hyper = list(prec.unstruct = list(prior="loggamma",param=c(0.1,0.01)), 
+                                          prec.spatial = list(prior="loggamma",param=c(0.1,0.001))))
+
+```
+
+# The INLA Model
+
+```{r}
+mod.cov <- inla(formula.cov, family = "poisson", data = full_poly@data, E = E, verbose = F, 
+                control.compute = list(cpo = TRUE, dic = TRUE, graph = TRUE, waic =TRUE),
+                control.predictor=list(compute=TRUE))
+```
+
+# Model Summary 
+
+```{r}
+mod.cov$summary.fixed
+
+mod.cov$summary.hyperpar
+```
+
+# Spatial Fraction 
+
+```{r}
+m <- mod.cov$marginals.random$ID[1:48]
+zeta.cov <- lapply(m,function(x)inla.emarginal(exp,x))
+
+a=0
+a1 = 1
+
+inlaprob.cov<-lapply(mod.cov$marginals.random$ID[1:48], function(X){
+  1-inla.pmarginal(a, X)
+})
+
+
+inlaprob.cov2<-lapply(mod.cov$marginals.fitted.values, function(X){
+  1-inla.pmarginal(a1, X)
+})
+
+
+m<-mod.cov$marginals.random$ID
+
+mat.marg<-matrix(NA, nrow=48, ncol=1000)
+
+for (i in 1:48){
+  u<-m[[48+i]]
+  s<-inla.rmarginal(1000, u)
+  mat.marg[i,]<-s}
+
+var.RRspatial<-mean(apply(mat.marg, 2, sd))^2
+var.RRhet<-inla.emarginal(function(x) 1/x,
+                          mod.cov$marginals.hyper$"Precision for ID (iid component)")
+ss <- var.RRspatial/(var.RRspatial+var.RRhet)
+ss
+```
+
+# Model evaluation
+
+```{r}
+mod.cov$dic$dic
+mod.cov$dic$p.eff
+mod.cov$waic$waic
+mod.cov$waic$p.eff
+mod.cov$mlik[1]
+
+-sum(log(mod.cov$cpo$cpo))
+```
+
+
+# defaillance probability
+
+```{r}
+fail <- mod.cov$cpo$failure
+fail 
+sum(mod.cov$cpo$failure >0)
+
+xlsx::write.xlsx(fail, "failure.xlsx")
+```
+
+
+# CPO plot 
+
+```{r}
+cpod <- data.frame(ID = 1:48,
+                   wilayas = full$Wilaya,
+                   CPO = mod.cov$cpo$cpo,
+                   CPO2 = mod2$cpo$cpo
+                   )
+
+cpod %>%
+  ggplot(aes(x = ID, y = CPO)) + 
+  geom_point(col = "blue", alpha = 0.5) +
+  geom_text(aes(label = wilayas)) + 
+  geom_hline(yintercept = 0.01, col = "red") +
+  theme_bw()
+
+cpod %>%
+  ggplot(aes(x = ID, y = CPO2)) + 
+  geom_point(col = "blue", alpha = 0.5) +
+  geom_text(aes(label = wilayas)) + 
+  geom_hline(yintercept = 0.01, col = "red") + 
+  labs(y ="CPO") +
+  theme_bw()
+
+```
+
+# PIT plot 
+
+```{r}
+pit <- mod2$cpo$pit
+uniquant <- (1:48)/(48+1)
+plot(uniquant, sort(pit), xlab="quantiles uniformes",
+     ylab="valeurs PIT ordonn?es")
+abline(0,1)
+
+
+plot(logit(uniquant), logit(sort(pit)), xlab="uniform quantiles", 
+     ylab="Sorted PIT values", main="Logit scale")
+abline(0,1)
+
+which(abs(logit(pit)) > 3)
+
+
+data.frame(pit = sort(pit), uni = uniquant) %>%
+  ggplot(aes(x= uni, y = pit)) + 
+  geom_point()+
+  geom_abline(intercept = 0, slope = 1, col = "red") + 
+  labs(x= "quantiles uniformes", y = "valeurs PIT ordonnées") +
+  theme_bw()
+
+data.frame(pit = logit(sort(pit)), uni = logit(uniquant)) %>%
+  ggplot(aes(x= uni, y = pit)) + 
+  geom_point()+
+  geom_abline(intercept = 0, slope = 1, col = "red") +
+  labs(x= "quantiles uniformes", y = "valeurs PIT ordonnées") +
+  ggtitle("échelle logarithmique")+
+  theme_bw()
+```
+
+# Model correction(takes time (variant with the number of CPO values))
+
+```{r}
+mod2 <- inla.cpo(mod.cov)
+```
+
+# SMR and RR
+
+```{r}
+full$smr <- full$Y/full$E
+full$RR <- mod2$summary.fitted.values[, "mean"]
+full$LL <- mod2$summary.fitted.values[, "0.025quant"]
+full$UL <- mod2$summary.fitted.values[, "0.975quant"]
+
+summary(full[, c("RR", "LL", "UL")])
+
+full$smr
+full$smr-full$RR
+(full$smr-full$RR)^2
+sum((full$smr-full$RR)^2)
+sum((full$smr-full$RR)^2)/48
+sqrt(sum((full$smr-full$RR)^2)/48)
+```
+
+
+# Plots SMR and RR
+
+```{r}
+gRR <- ggplot(full) + geom_sf(aes(fill = RR)) +
+  scale_fill_gradient2(midpoint = 1, low = "blue", mid = "white", high = "red", limits = c(0.8, 1.3)) +
+  theme_bw()
+
+gLL <- ggplot(full) + geom_sf(aes(fill = LL)) +
+  scale_fill_gradient2(
+    midpoint = 1, low = "blue", mid = "white", high = "red") +
+  theme_bw()
+
+gUL <- ggplot(full) + geom_sf(aes(fill = UL)) +
+  scale_fill_gradient2(midpoint = 1, low = "blue", mid = "white", high = "red") +
+  theme_bw()
+
+gLL + gRR + gUL
+
+p1 <- ggplot(full) + geom_sf(aes(fill = smr)) +
+  scale_fill_gradient2(
+    midpoint = 1, low = "blue", mid = "white", 
+    high = "red", limits = c(0.7,1.7)) + 
+  theme_bw() +
+  labs(fill = "SMR")
+
+p2 <- ggplot(full) + geom_sf(aes(fill = RR)) +
+  scale_fill_gradient2(
+    midpoint = 1, low = "blue", mid = "white", 
+    high = "red", limits = c(0.8,1.3)) + 
+  theme_bw() +
+  labs(fill = "RR")
+
+p1 + p2
+```
+
+# boxplot SMR
+
+```{r}
+full %>%
+  ggplot(aes(y = smr)) +
+  geom_boxplot(fill = "lightblue") +
+  geom_hline(yintercept = mean(full$smr), col ="red") +
+  labs(y="Taux de Mortalité Standardisé (SMR)") + 
+  theme_bw()
+
+full %>%
+  ggplot(aes(y = RR)) +
+  geom_boxplot(fill = "lightblue") +
+  geom_hline(yintercept = mean(full$RR), col ="red") +
+  labs(y="Risque Relatif (RR)") + 
+  theme_bw()
+```
+
+
+# SMR and Probability of excedence 
+
+```{r}
+full <- full %>% mutate(SMR.zeta = unlist(zeta.cov),
+                        pp.zeta = unlist(inlaprob.cov),
+                        pp.eta = unlist(inlaprob.cov2))
+
+
+ggplot(full) + geom_sf(aes(fill = SMR.zeta)) +
+  scale_fill_gradient2(midpoint = 1.2, low = "blue", mid = "white", 
+                       high = "red", limits = c(0.8, 1.3)) +
+  theme_bw() +
+  labs(fill ="SMR")
+
+ggplot(full) + geom_sf(aes(fill = pp.zeta)) +
+  scale_fill_gradient2(midpoint = 0.5, low = "green", mid = "white", 
+                       high = "red", limits = c(0, 1)) +
+  theme_bw() +
+  labs(fill ="Zeta")
+
+ggplot(full) + geom_sf(aes(fill = pp.eta)) +
+  scale_fill_gradient2(midpoint = 0.5, low = "green", mid = "white", 
+                       high = "red", limits = c(0, 1)) +
+  theme_bw() + 
+  labs(fill ="Probabilité a posteriori")
+```
+
+
+# some plot 
+
+```{r}
+full <- 
+  full %>% mutate(re = mod.cov$summary.random$ID[1:48, "mean"])
+
+ggplot(full) + 
+  geom_sf(aes(fill = re)) +
+  scale_fill_gradient2(
+    midpoint = 0, low = "blue", mid = "white", high = "red"
+  ) +
+  theme_bw()
+```
+
+
+
+
+# BYM with PC prior 
+
+```{r}
+formula.cov <- Y ~ 1+ +CIG+f(ID, model = "bym2", graph = ALG.adj, 
+                             hyper = list(phi = list(
+                                                    prior = "pc",
+                                                    param = c(0.5, 2/3)) ,
+                                          prec = list(
+                                                    prior = "pc.prec",
+                                                    param = c(0.5/0.31, 0.01))
+                                          )
+                             )
+
+mod.cov <- inla(formula.cov, family = "poisson", data = full_poly@data, E = E, verbose = F, 
+                control.compute = list(cpo = TRUE, dic = TRUE, graph = TRUE, waic =TRUE),
+                control.predictor=list(compute=TRUE))
+```
+
+
+# Model evaluation
+
+```{r}
+mod.cov$summary.fixed
+
+mod.cov$summary.hyperpar
+
+mod.cov$dic$dic
+mod.cov$dic$p.eff
+mod.cov$waic$waic
+mod.cov$waic$p.eff
+mod.cov$mlik[1]
+
+-sum(log(mod.cov$cpo$cpo))
+
+fail <- mod.cov$cpo$failure
+fail 
+sum(mod.cov$cpo$failure >0)
+```
+
+#
+
+```{r}
+full$smr <- full$Y/full$E
+full$RR <- mod.cov$summary.fitted.values[, "mean"]
+full$LL <- mod.cov$summary.fitted.values[, "0.025quant"]
+full$UL <- mod.cov$summary.fitted.values[, "0.975quant"]
+
+gRR <- ggplot(full) + geom_sf(aes(fill = RR)) +
+  scale_fill_gradient2(midpoint = 1, low = "blue", mid = "white", high = "red", limits = c(0.8, 1.3)) +
+  theme_bw()
+
+gLL <- ggplot(full) + geom_sf(aes(fill = LL)) +
+  scale_fill_gradient2(
+    midpoint = 1, low = "blue", mid = "white", high = "red") +
+  theme_bw()
+
+gUL <- ggplot(full) + geom_sf(aes(fill = UL)) +
+  scale_fill_gradient2(midpoint = 1, low = "blue", mid = "white", high = "red") +
+  theme_bw()
+
+gLL + gRR + gUL
+
+p1 <- ggplot(full) + geom_sf(aes(fill = smr)) +
+  scale_fill_gradient2(
+    midpoint = 1, low = "blue", mid = "white", 
+    high = "red", limits = c(0.7,1.7)) + 
+  theme_bw() +
+  labs(fill = "SMR")
+
+p2 <- ggplot(full) + geom_sf(aes(fill = RR)) +
+  scale_fill_gradient2(
+    midpoint = 1, low = "blue", mid = "white", 
+    high = "red", limits = c(0.8,1.3)) + 
+  theme_bw() +
+  labs(fill = "RR")
+
+p1 + p2
+
+```
+
