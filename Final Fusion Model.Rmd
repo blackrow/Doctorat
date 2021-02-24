@@ -44,106 +44,45 @@ logit <- function(x){log(x/(1-x))}
 expit <- function(x) {exp(x)/(1+exp(x))}
 ```
 
-# Getting data 
+
+# Data (same as areal model if already executed)
 
 ```{r}
+# Import Data
 data = read_xlsx("data.xlsx", sheet = "Sheet1")
 data$ID <- 1:48
-```
 
-# Getting shape files
-
-```{r}
+# Getting shapefiles
 dz_mapw <- getData("GADM", country ="DZ", level = "1")
 dz_map <- getData("GADM", country ="DZ", level = "0")
 
 dz2 <- st_as_sf(dz_mapw)
-```
 
-# Some cleaning 
-
-```{r}
+# cleaning wilayas names
 Wilaya <- dz2$NAME_1 %>% 
                 lapply(gsub, pattern="ï", replacement = "i") %>% 
                 unlist()
 dz2$Wilaya <- Wilaya
-```
 
-# Mering data 
-
-```{r}
+# Merging data with shapefiles
 full <- dz2 %>% full_join(data, by = "Wilaya")
 full$CIG = full$CIG/1000
-```
 
 # Convert to spatial polygon again !
-
-```{r}
 full_poly <- as_Spatial(full)
 
+# centroides for geostatistical data
 sf_cent <- st_centroid(full)
 sp_cent <- gCentroid(as(full, "Spatial"), byid = TRUE)
 
+# coordinates
 sample3 <- as_Spatial(sf_cent) 
 coo <- sample3@coords
 ```
 
 
 
-
-
-# Data preparation 
-
-
-
-
-# try directly !!!!
-
-
-
-```{r}
-
-domain <- polygons(dz_mapw)
-crs = crs(domain)
-
-geo_df <- data.frame(coo) 
-colnames(geo_df) <- c("x","y")
-
-dat2 <- data.frame(colon = full$Y2)
-
-coordinates(geo_df) <- ~ x+y
-geo_data <- SpatialPointsDataFrame(geo_df, dat2)
-crs(geo_data) <- crs
-
-
-
-lattice_data <- sp::SpatialPolygonsDataFrame(domain,
-                                             data.frame(lung = full$Y,
-                                                        CIG = full$CIG))
-
-dat_inla <- spatialfusion::fusionData(geo.data = geo_data, geo.formula = colon ~ 1,
-                       lattice.data = lattice_data, lattice.formula = lung ~ CIG,
-                       distributions = c("normal","poisson"),
-                       method = "INLA", proj4string = crs)
-
-mod_inla <- spatialfusion::fusion(data = dat_inla, n.latent = 1, bans = 0, alpha = alpha,
-                   prior.range = prior.range, prior.sigma = prior.sigma,
-                   mesh.locs = coo, mesh.max.edge = c(1, 3), mesh.args = list(cutoff = 0.1, offset = c(5,1)) ,verbose = T)
-summary(mod_inla)
-plot(mod_inla, posterior = FALSE)
-
-
-```
-
-
-
-
-
-
-
-
 ## The Model
-
 
 # Model estimation 
 
@@ -450,41 +389,4 @@ gmean3 + gsd3
 gsd3
 gmean3
 ```
-
-
-
-## simulation : Model estimation 
-
-```{r}
-dat <- out
-geo_df <- data.frame(x = dat$mrf[dat$sample.ind, "x"],
-                     y = dat$mrf[dat$sample.ind, "y"])
-
-dat2 <- data.frame(cov.point = dat$data$X_point[,2],
-                   outcome = dat$data$Y_point[[1]])
-
-coordinates(geo_df) <- ~ x+y
-geo_data <- SpatialPointsDataFrame(geo_df, dat2)
-crs(geo_data) <- crs
-
-
-
-lattice_data <- sp::SpatialPolygonsDataFrame(dat$poly,
-                                             data.frame(outcome = dat$data$Y_area[[1]],
-                                                        cov.area = dat$data$X_area[,2]))
-
-dat_inla <- fusionData(geo.data = geo_data, geo.formula = outcome ~ cov.point,
-                       lattice.data = lattice_data, lattice.formula = outcome ~ cov.area,
-                       pp.data = dat$data$lgcp.coords,
-                       distributions = c("normal","poisson"),
-                       method = "INLA", proj4string = crs)
-
-mod_inla <- fusion(data = dat_inla, n.latent = 1, bans = 0, alpha = alpha,
-                   prior.range = prior.range, prior.sigma = prior.sigma,
-                   mesh.locs = dat$data$lgcp.coords, mesh.max.edge = c(3, 3), verbose = T)
-summary(mod_inla)
-plot(mod_inla, posterior = FALSE)
-```
-
-
 
