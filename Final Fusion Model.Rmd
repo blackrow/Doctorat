@@ -1,0 +1,490 @@
+---
+title: "Fusion Model"
+author: "AyouB"
+date: "26/10/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 
+
+# Loading packages
+
+```{r }
+pacman::p_load(tidyverse,
+               INLA,
+               sp,
+               sf,
+               rgdal,
+               rgeos,
+               tmap,
+               tmaptools,
+               readxl,
+               RColorBrewer,
+               spdep,
+               raster,
+               patchwork)
+```
+
+## multi thread option 
+
+```{r}
+inla.setOption(num.threads=1)
+```
+
+
+# Help Functions
+
+
+```{r }
+logit <- function(x){log(x/(1-x))}
+expit <- function(x) {exp(x)/(1+exp(x))}
+```
+
+# Getting data 
+
+```{r}
+data = read_xlsx("data.xlsx", sheet = "Sheet1")
+data$ID <- 1:48
+```
+
+# Getting shape files
+
+```{r}
+dz_mapw <- getData("GADM", country ="DZ", level = "1")
+dz_map <- getData("GADM", country ="DZ", level = "0")
+
+dz2 <- st_as_sf(dz_mapw)
+```
+
+# Some cleaning 
+
+```{r}
+Wilaya <- dz2$NAME_1 %>% 
+                lapply(gsub, pattern="ï", replacement = "i") %>% 
+                unlist()
+dz2$Wilaya <- Wilaya
+```
+
+# Mering data 
+
+```{r}
+full <- dz2 %>% full_join(data, by = "Wilaya")
+full$CIG = full$CIG/1000
+```
+
+# Convert to spatial polygon again !
+
+```{r}
+full_poly <- as_Spatial(full)
+
+sf_cent <- st_centroid(full)
+sp_cent <- gCentroid(as(full, "Spatial"), byid = TRUE)
+
+sample3 <- as_Spatial(sf_cent) 
+coo <- sample3@coords
+```
+
+
+
+
+
+# Data preparation 
+
+
+
+
+# try directly !!!!
+
+
+
+```{r}
+
+domain <- polygons(dz_mapw)
+crs = crs(domain)
+
+geo_df <- data.frame(coo) 
+colnames(geo_df) <- c("x","y")
+
+dat2 <- data.frame(colon = full$Y2)
+
+coordinates(geo_df) <- ~ x+y
+geo_data <- SpatialPointsDataFrame(geo_df, dat2)
+crs(geo_data) <- crs
+
+
+
+lattice_data <- sp::SpatialPolygonsDataFrame(domain,
+                                             data.frame(lung = full$Y,
+                                                        CIG = full$CIG))
+
+dat_inla <- spatialfusion::fusionData(geo.data = geo_data, geo.formula = colon ~ 1,
+                       lattice.data = lattice_data, lattice.formula = lung ~ CIG,
+                       distributions = c("normal","poisson"),
+                       method = "INLA", proj4string = crs)
+
+mod_inla <- spatialfusion::fusion(data = dat_inla, n.latent = 1, bans = 0, alpha = alpha,
+                   prior.range = prior.range, prior.sigma = prior.sigma,
+                   mesh.locs = coo, mesh.max.edge = c(1, 3), mesh.args = list(cutoff = 0.1, offset = c(5,1)) ,verbose = T)
+summary(mod_inla)
+plot(mod_inla, posterior = FALSE)
+
+
+```
+
+
+
+
+
+
+
+
+## The Model
+
+
+# Model estimation 
+
+```{r}
+domain <- polygons(dz_mapw)
+crs = crs(domain)
+
+geo_df <- data.frame(coo) 
+colnames(geo_df) <- c("x","y")
+
+dat2 <- data.frame(colon = full$Y2)
+
+coordinates(geo_df) <- ~ x+y
+geo_data <- SpatialPointsDataFrame(geo_df, dat2)
+crs(geo_data) <- crs
+
+
+
+lattice_data <- sp::SpatialPolygonsDataFrame(domain,
+                                             data.frame(lung = full$Y,
+                                                        CIG = full$CIG,
+                                                        E = full$E))
+
+
+
+geo.data <- geo_data
+geo.formula <- colon ~ 1 
+lattice.data <- lattice_data
+lattice.formula <- lung ~ 1 + CIG
+proj4string <- crs
+distributions = c("normal", "poisson")
+verbose = FALSE
+alpha = 3/2
+prior.range <- c(5, 0.5)
+prior.sigma <- c(10, 0.05) 
+
+locs_point = geo.data@coords
+
+mesh.point <- INLA::inla.mesh.2d(loc = locs_point, 
+                                 max.edge = c(1,3),
+                                 cutoff = 0.1, 
+                                 offset = c(5,1))
+
+spde = INLA::inla.spde2.pcmatern(
+                                 mesh = mesh.point,
+                                 alpha = alpha,
+                                 prior.range = prior.range,
+                                 prior.sigma = prior.sigma)
+                                
+                           
+# stack point
+X_point <- model.matrix(geo.formula, geo.data@data)
+A.point = INLA::inla.spde.make.A(mesh = mesh.point, loc = locs_point)
+y.list.point <- cbind(as.matrix(geo.data@data[, "colon"]),rep(NA,48))
+effect.list.point <- list(s11= 1:mesh.point$n, beta_p1 = X_point)
+A.list.point <- list(A.point, 1)
+stack.point1 <- INLA::inla.stack(
+                                 tag = "point", 
+                                 data = list(y = y.list.point), 
+                                 effects = effect.list.point, 
+                                 A = A.list.point)
+                                 
+# stack area
+mesh.locs <- SpatialPoints(mesh.point$loc, proj4string = crs)
+mesh.in <- mesh.point$loc[as.vector(which(!is.na(over(mesh.locs, lattice.data)[,1]))),]
+mesh.in.locs <- SpatialPoints(mesh.in, proj4string = crs)
+mesh.in.id <- as.numeric(sapply(over(mesh.in.locs, lattice.data, returnList = TRUE), rownames))
+
+X_area <- model.matrix(lattice.formula, lattice.data@data)
+A.area = INLA::inla.spde.make.A(mesh = mesh.point, loc = mesh.in , block = mesh.in.id, block.rescale = "sum")
+
+y.list.area <- cbind(rep(NA,48), as.matrix(lattice.data@data[,"lung"]))
+effect.list.area <- list(s12= 1:mesh.point$n, beta_a1 = X_area)
+
+A.list.area <- list(A.area, 1)
+stack.area1 <- INLA::inla.stack(
+                                 tag = "area", 
+                                 data = list(y = y.list.area, E = lattice.data@data$E), 
+                                 effects = effect.list.area, 
+                                 A = A.list.area)
+                                
+
+# stack full 
+stack.full <- INLA::inla.stack(stack.point1, stack.area1)
+
+
+# formula
+formula <- as.formula(y ~ -1 + beta_p1 + beta_a1 + f(s11, model = spde) + f(s12, copy = "s11", 
+    fixed = FALSE))
+
+
+# model
+result <- INLA::inla(
+                     formula = formula,
+                     data = INLA::inla.stack.data(stack.full), E = inla.stack.data(stack.full)$E, 
+                     control.predictor = list(A = INLA::inla.stack.A(stack.full), compute = T),
+                     family = distributions, 
+                     control.compute = list(cpo = TRUE, dic = TRUE, graph = TRUE, waic =TRUE),
+                     verbose = TRUE)
+                     
+```
+
+## Model evaluation 
+
+```{r}
+paste("DIC")
+result$dic$dic
+paste("Effective number of paramètres")
+result$dic$p.eff
+paste("WAIC")
+result$waic$waic
+result$waic$p.eff
+paste("Marginal likelihood")
+result$mlik
+paste("log CPO")
+-sum(log(result$cpo$cpo), na.rm = TRUE)
+
+
+
+
+fail <- result$cpo$failure
+fail 
+sum(result$cpo$failure >0)
+
+
+result$summary.fixed
+result$summary.hyperpar
+
+
+
+```
+
+
+
+## CPO correction
+
+```{r}
+result2 <- result
+result <- inla.cpo(result2)
+```
+
+
+
+## Prediction 
+
+```{r}
+pred.locs <- spsample(domain, 20000, type = "regular")
+plot(pred.locs)
+
+result.pred <- lapply(1:length(result$summary.random),
+                            function(i) INLA::inla.mesh.project(INLA::inla.mesh.projector(mesh.point, loc = as.matrix(pred.locs@coords)),
+                                                          result$summary.random[[i]]$`sd`))
+
+names(result.pred) <- paste0("latent.", names(result$summary.random))
+
+mod.pred.plot <- SpatialPointsDataFrame(coords = pred.locs, data = as.data.frame(result.pred))
+tm_shape(mod.pred.plot) +
+  tm_symbols(col = "latent.s11", shape = 15, size = 0.05, style = "cont",
+             midpoint = NA, legend.col.reverse = F, palette = get_brewer_pal("-YlOrRd", n = 7),
+             title.col = "écart-type") +
+  tm_shape(domain) + tm_borders() +
+  tm_layout(frame = FALSE, legend.outside = TRUE)
+
+
+
+
+result.pred <- lapply(1:length(result$summary.random),
+                            function(i) INLA::inla.mesh.project(INLA::inla.mesh.projector(mesh.point, loc = as.matrix(pred.locs@coords)),
+                                                          result$summary.random[[i]]$`mean`))
+
+names(result.pred) <- paste0("latent.", names(result$summary.random))
+
+mod.pred.plot <- SpatialPointsDataFrame(coords = pred.locs, data = as.data.frame(result.pred))
+tm_shape(mod.pred.plot) +
+  tm_symbols(col = "latent.s11", shape = 15, size = 0.05, style = "cont",
+             midpoint = 0, legend.col.reverse = F, palette = get_brewer_pal("-RdYlGn", n = 11),
+             title.col = "moyenne") +
+  tm_shape(domain) + tm_borders() +
+  tm_layout(frame = FALSE, legend.outside = TRUE)
+
+
+
+
+
+result.pred <- lapply(1:length(result$summary.random),
+                            function(i) INLA::inla.mesh.project(INLA::inla.mesh.projector(mesh.point, loc = as.matrix(pred.locs@coords)),
+                                                          result$summary.random[[i]]$`0.5quant`))
+
+names(result.pred) <- paste0("latent.", names(result$summary.random))
+
+mod.pred.plot <- SpatialPointsDataFrame(coords = pred.locs, data = as.data.frame(result.pred))
+tm_shape(mod.pred.plot) +
+  tm_symbols(col = "latent.s11", shape = 15, size = 0.05, style = "cont",
+             midpoint = 0, legend.col.reverse = F, palette = get_brewer_pal("-RdYlGn", n = 11),
+             title.col = "médiane") +
+  tm_shape(domain) + tm_borders() +
+  tm_layout(frame = FALSE, legend.outside = TRUE)
+
+
+result.pred <- lapply(1:length(result$summary.random),
+                            function(i) INLA::inla.mesh.project(INLA::inla.mesh.projector(mesh.point, loc = as.matrix(pred.locs@coords)),
+                                                          result$summary.random[[i]]$`0.025quant`))
+
+names(result.pred) <- paste0("latent.", names(result$summary.random))
+
+mod.pred.plot <- SpatialPointsDataFrame(coords = pred.locs, data = as.data.frame(result.pred))
+tm_shape(mod.pred.plot) +
+  tm_symbols(col = "latent.s11", shape = 15, size = 0.05, style = "cont",
+             midpoint = 0, legend.col.reverse = F, palette = get_brewer_pal("-RdYlGn", n = 11),
+             title.col = "2.5% quantiles") +
+  tm_shape(domain) + tm_borders() +
+  tm_layout(frame = FALSE, legend.outside = TRUE)
+
+
+result.pred <- lapply(1:length(result$summary.random),
+                            function(i) INLA::inla.mesh.project(INLA::inla.mesh.projector(mesh.point, loc = as.matrix(pred.locs@coords)),
+                                                          result$summary.random[[i]]$`0.975quant`))
+
+names(result.pred) <- paste0("latent.", names(result$summary.random))
+
+mod.pred.plot <- SpatialPointsDataFrame(coords = pred.locs, data = as.data.frame(result.pred))
+tm_shape(mod.pred.plot) +
+  tm_symbols(col = "latent.s11", shape = 15, size = 0.05, style = "cont",
+             midpoint = 0, legend.col.reverse = F, palette = get_brewer_pal("-RdYlGn", n = 11),
+             title.col = "97.5% quantiles") +
+  tm_shape(domain) + tm_borders() +
+  tm_layout(frame = FALSE, legend.outside = TRUE)
+
+
+
+result.pred <- lapply(1:length(result$summary.random),
+                            function(i) 
+INLA::inla.mesh.project(INLA::inla.mesh.projector(mesh.point, loc = as.matrix(pred.locs@coords)),
+                                                          result$summary.random[[i]]$`0.975quant`- result$summary.random[[i]]$`0.025quant`))
+
+
+names(result.pred) <- paste0("latent.", names(result$summary.random))
+
+mod.pred.plot <- SpatialPointsDataFrame(coords = pred.locs, data = as.data.frame(result.pred))
+tm_shape(mod.pred.plot) +
+  tm_symbols(col = "latent.s11", shape = 15, size = 0.05, style = "cont",
+             midpoint = NA, legend.col.reverse = F, palette = get_brewer_pal("YlOrRd", n = 7),
+             title.col = "étendue du 95% CI") +
+  tm_shape(domain) + tm_borders() +
+  tm_layout(frame = FALSE, legend.outside = TRUE)
+
+
+
+```
+
+
+
+## does it work ??
+
+```{r}
+rang3 <- apply(mesh3$loc[, c(1, 2)], 2, range)
+proj3 <- inla.mesh.projector(mesh3,
+                             xlim = rang3[, 1], ylim = rang3[, 2],
+                             dims = c(1000, 1000))
+
+mean_s3 <- inla.mesh.project(proj3, result$summary.random$s11$mean)
+sd_s3 <- inla.mesh.project(proj3, result$summary.random$s11$sd)
+
+df3 <- expand.grid(x = proj3$x, y = proj3$y)
+df3$mean <- as.vector(mean_s3)
+df3$sd <- as.vector(sd_s3)
+
+
+
+gmean3 <- ggplot(df3, aes(x = x, y = y, fill = mean)) +
+  geom_raster() + 
+  scale_fill_viridis(na.value = "transparent") +
+  labs(x = "east", y = "north" , fill = "moyenne") +
+  coord_fixed(ratio = 1) + theme_bw()
+
+gsd3 <- ggplot(df3, aes(x = x, y = y, fill = sd)) +
+  geom_raster() +
+  scale_fill_viridis(na.value = "transparent") +
+  labs(x = "east", y = "north" , fill = "écart-type") +
+  coord_fixed(ratio = 1) + theme_bw()
+
+gmean3 + gsd3
+
+
+coordinates(df3) =~x+y
+df3@proj4string = dz_map@proj4string
+df3 <- as.data.frame(df3[dz_map,])
+
+
+gmean3 <- ggplot(df3, aes(x = x, y = y, fill = mean)) +
+  geom_raster() +
+  scale_fill_viridis(na.value = "transparent") +
+  labs(x = "east", y = "north" , fill = "moyenne") +
+  coord_sf() + theme_bw()
+
+gsd3 <- ggplot(df3, aes(x = x, y = y, fill = sd)) +
+  geom_raster() +
+  scale_fill_viridis(na.value = "transparent",begin = 0.17, end =0.8) +
+  labs(x = "east", y = "north" , fill = "écart-type") +
+  coord_sf() + theme_bw()
+
+
+gmean3 + gsd3
+gsd3
+gmean3
+```
+
+
+
+## simulation : Model estimation 
+
+```{r}
+dat <- out
+geo_df <- data.frame(x = dat$mrf[dat$sample.ind, "x"],
+                     y = dat$mrf[dat$sample.ind, "y"])
+
+dat2 <- data.frame(cov.point = dat$data$X_point[,2],
+                   outcome = dat$data$Y_point[[1]])
+
+coordinates(geo_df) <- ~ x+y
+geo_data <- SpatialPointsDataFrame(geo_df, dat2)
+crs(geo_data) <- crs
+
+
+
+lattice_data <- sp::SpatialPolygonsDataFrame(dat$poly,
+                                             data.frame(outcome = dat$data$Y_area[[1]],
+                                                        cov.area = dat$data$X_area[,2]))
+
+dat_inla <- fusionData(geo.data = geo_data, geo.formula = outcome ~ cov.point,
+                       lattice.data = lattice_data, lattice.formula = outcome ~ cov.area,
+                       pp.data = dat$data$lgcp.coords,
+                       distributions = c("normal","poisson"),
+                       method = "INLA", proj4string = crs)
+
+mod_inla <- fusion(data = dat_inla, n.latent = 1, bans = 0, alpha = alpha,
+                   prior.range = prior.range, prior.sigma = prior.sigma,
+                   mesh.locs = dat$data$lgcp.coords, mesh.max.edge = c(3, 3), verbose = T)
+summary(mod_inla)
+plot(mod_inla, posterior = FALSE)
+```
+
+
+
